@@ -48,6 +48,8 @@ const GAMES = {
         title: 'King of the Gods',
         rule: 'Receive 1 VP for each of your houses inside a non-brick city.',
         inputLabel: 'Houses in non-brick cities',
+        inputUnit: 'houses',
+        cardsUnit: 'Jupiter cards',
         vpPer: 1
       },
       {
@@ -59,6 +61,8 @@ const GAMES = {
         title: 'God of Agriculture',
         rule: 'Receive 1 VP for each province where you have at least one house.',
         inputLabel: 'Provinces with at least 1 house',
+        inputUnit: 'provinces',
+        cardsUnit: 'Saturnus cards',
         vpPer: 1
       },
       {
@@ -70,6 +74,8 @@ const GAMES = {
         title: 'God of Commerce',
         rule: 'Receive 2 VP for each type of goods that you produce with your houses.',
         inputLabel: 'Types of goods produced',
+        inputUnit: 'types',
+        cardsUnit: 'Mercurius cards',
         vpPer: 2
       },
       {
@@ -81,6 +87,8 @@ const GAMES = {
         title: 'God of War',
         rule: 'Receive 2 VP for each of your colonists on the game board.',
         inputLabel: 'Colonists on the board',
+        inputUnit: 'colonists',
+        cardsUnit: 'Mars cards',
         vpPer: 2
       },
       {
@@ -115,7 +123,8 @@ let state = {
   setupData: null,
   currentGame: loadStored(STORE.current),
   history: loadStored(STORE.history) || [],
-  viewingHistoryIndex: 0
+  viewingHistoryIndex: 0,
+  scoringTab: null
 };
 
 function persistCurrent() {
@@ -148,7 +157,10 @@ function getVestaSestertii(scores) {
 }
 
 function getSimpleVP(scores, cat) {
-  return (parseInt((scores[cat.id] || {}).count) || 0) * cat.vpPer;
+  const s = scores[cat.id] || {};
+  const count = parseInt(s.count) || 0;
+  const cards = parseInt(s.cards) || 0;
+  return count * cards * cat.vpPer;
 }
 
 function getMinervaVP(scores) {
@@ -175,10 +187,15 @@ function getPlayerTotal(player, gameId) {
   return catTotal + getConcordiaCardVP(player.scores, game);
 }
 
-function getRanked(players, gameId) {
+function getRanked(players, gameId, praefectus) {
   return players
     .map((p, i) => ({ ...p, _index: i, total: getPlayerTotal(p, gameId) }))
-    .sort((a, b) => b.total - a.total);
+    .sort((a, b) => {
+      if (b.total !== a.total) return b.total - a.total;
+      if (praefectus === b._index) return 1;
+      if (praefectus === a._index) return -1;
+      return 0;
+    });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -201,10 +218,10 @@ function fmtDate(iso) {
 function initScores(game) {
   return {
     vesta: { brick: '', wheat: '', tool: '', wine: '', cloth: '', cash: '' },
-    iuppiter:  { count: '' },
-    saturnus:  { count: '' },
-    mercurius: { count: '' },
-    mars:      { count: '' },
+    iuppiter:  { count: '', cards: '' },
+    saturnus:  { count: '', cards: '' },
+    mercurius: { count: '', cards: '' },
+    mars:      { count: '', cards: '' },
     minerva:   { card: '', houses: '' },
     concordia_card: { hasCard: false }
   };
@@ -244,6 +261,9 @@ function render() {
   });
   document.querySelectorAll('.concordia-cb').forEach(el => {
     el.addEventListener('change', onConcordiaCardChange);
+  });
+  document.querySelectorAll('.praefectus-radio').forEach(el => {
+    el.addEventListener('change', onPraefectusChange);
   });
 }
 
@@ -360,17 +380,44 @@ function renderSetup() {
 
 // ── SCORING ──────────────────────────────────────────────────
 
+function getScoringTabs(game) {
+  return [
+    ...game.categories.map(c => ({ id: c.id, emoji: c.emoji, label: c.name })),
+    { id: 'finish', emoji: '✓', label: 'Finish' }
+  ];
+}
+
 function renderScoring() {
   const cg = state.currentGame;
   const game = GAMES[cg.gameId];
   const players = cg.players;
+  const tabs = getScoringTabs(game);
+  const activeTab = state.scoringTab || tabs[0].id;
+  const activeIdx = tabs.findIndex(t => t.id === activeTab);
+  const hasPrev = activeIdx > 0;
+  const hasNext = activeIdx < tabs.length - 1;
 
-  const sections = game.categories.map(cat => {
-    if (cat.type === 'vesta')   return renderVestaSection(players, cat);
-    if (cat.type === 'simple')  return renderSimpleSection(players, cat);
-    if (cat.type === 'minerva') return renderMinervaSection(players, cat);
-    return '';
-  }).join('');
+  const tabBar = tabs.map(t => `
+<button class="tab-btn${t.id === activeTab ? ' active' : ''}"
+  data-action="setTab" data-tab="${t.id}">
+  <span class="tab-emoji">${t.emoji}</span>
+  <span class="tab-label">${t.label}</span>
+</button>`).join('');
+
+  let tabContent = '';
+  if (activeTab === 'finish') {
+    tabContent = renderFinishTab(players, game);
+  } else {
+    const cat = game.categories.find(c => c.id === activeTab);
+    if (cat) {
+      if (cat.type === 'vesta')   tabContent = renderVestaSection(players, cat);
+      if (cat.type === 'simple')  tabContent = renderSimpleSection(players, cat);
+      if (cat.type === 'minerva') tabContent = renderMinervaSection(players, cat);
+    }
+  }
+
+  const prevTab = hasPrev ? tabs[activeIdx - 1] : null;
+  const nextTab = hasNext ? tabs[activeIdx + 1] : null;
 
   return `
 <div class="screen">
@@ -380,18 +427,59 @@ function renderScoring() {
       <h2 class="screen-title">${h(game.name)}</h2>
       <button class="hdr-btn hdr-right" data-action="showResults">Results ›</button>
     </div>
+    <div class="scoring-tabs">${tabBar}</div>
   </div>
   <div class="sc-content">
-    <p class="scoring-intro">Score each god for all players before moving on to the next.</p>
-    ${sections}
-    ${renderConcordiaCardSection(players, game)}
+    ${tabContent}
     <div id="total-scores" class="total-results-card">
       ${renderTotalScoresContent(players, game.id)}
     </div>
-    <button class="btn btn-primary btn-lg" data-action="showResults">
-      View &amp; Save Results
-    </button>
+    <div class="tab-nav-bar">
+      ${hasPrev
+        ? `<button class="btn btn-outline tab-nav-btn" data-action="setTab" data-tab="${prevTab.id}">‹ ${prevTab.emoji} ${prevTab.label}</button>`
+        : `<div></div>`}
+      ${hasNext
+        ? `<button class="btn btn-primary tab-nav-btn" data-action="setTab" data-tab="${nextTab.id}">${nextTab.emoji} ${nextTab.label} ›</button>`
+        : `<button class="btn btn-primary tab-nav-btn" data-action="showResults">View Results ›</button>`}
+    </div>
   </div>
+</div>`;
+}
+
+function renderFinishTab(players, game) {
+  return `
+<div class="sc-finish">
+  ${renderConcordiaCardSection(players, game)}
+  ${renderPraefectusSection(players, game)}
+</div>`;
+}
+
+function renderPraefectusSection(players, game) {
+  const praefectus = state.currentGame.praefectusPlayer ?? null;
+  const options = [
+    `<label class="praefectus-label${praefectus === null ? ' selected' : ''}">
+      <input type="radio" class="praefectus-radio" name="praefectus" value="-1"${praefectus === null ? ' checked' : ''}>
+      <span class="praefectus-none">Nobody / Not yet assigned</span>
+    </label>`,
+    ...players.map((p, i) => `
+    <label class="praefectus-label${praefectus === i ? ' selected' : ''}">
+      <input type="radio" class="praefectus-radio" name="praefectus" value="${i}"${praefectus === i ? ' checked' : ''}>
+      <div class="player-dot player-dot-sm" style="background:${pc(i)}">${i + 1}</div>
+      <span class="praefectus-name">${h(p.name)}</span>
+    </label>`)
+  ].join('');
+
+  return `
+<div class="god-section praefectus-section">
+  <div class="god-header" style="--gc:#7A6A50">
+    <span class="god-emoji">⚖️</span>
+    <div>
+      <div class="god-name">PRÆFECTUS MAGNUS</div>
+      <div class="god-title">Tiebreaker</div>
+    </div>
+  </div>
+  <div class="god-rule">In case of a tie, the player holding the PRÆFECTUS MAGNUS card wins. If no player holds it yet, the tied player who would receive it next wins.</div>
+  <div class="praefectus-options">${options}</div>
 </div>`;
 }
 
@@ -415,11 +503,11 @@ function renderVestaSection(players, cat) {
       const val = (parseInt(s[g.id]) || 0) * g.rate;
       return `
 <div class="good-row">
-  <span class="good-label">${g.emoji} ${g.name} <span class="good-rate">×${g.rate}₴</span></span>
+  <span class="good-label">${g.emoji} ${g.name} <span class="good-rate">×${g.rate}🪙</span></span>
   <input class="num-input num-input-xs" type="number" inputmode="numeric" min="0"
     data-type="goods" data-player="${i}" data-good="${g.id}"
     value="${h(qty)}" placeholder="0">
-  <span class="good-val" id="gv-${g.id}-${i}">${val}₴</span>
+  <span class="good-val" id="gv-${g.id}-${i}">${val}🪙</span>
 </div>`;
     }).join('');
 
@@ -440,11 +528,11 @@ function renderVestaSection(players, cat) {
       <input class="num-input num-input-sm" type="number" inputmode="numeric" min="0"
         data-type="cash" data-player="${i}"
         value="${h(cash)}" placeholder="0">
-      <span class="good-val">₴</span>
+      <span class="good-val">🪙</span>
     </div>
   </div>
   <div class="vesta-total">
-    <span id="st-${i}">${sesterces}</span>₴ ÷ 10 = <strong id="vvp-${i}">${vp}</strong> VP
+    <span id="st-${i}">${sesterces}</span>🪙 ÷ 10 = <strong id="vvp-${i}">${vp}</strong> VP
   </div>
 </div>`;
   }).join('');
@@ -457,29 +545,45 @@ function renderVestaSection(players, cat) {
 }
 
 function renderSimpleSection(players, cat) {
-  const rows = players.map((p, i) => {
-    const count = (p.scores[cat.id] || {}).count ?? '';
+  const cards = players.map((p, i) => {
+    const s = p.scores[cat.id] || {};
+    const count = s.count ?? '';
+    const cardsVal = s.cards ?? '';
     const vp = getSimpleVP(p.scores, cat);
     return `
-<div class="player-row">
-  <div class="player-dot player-dot-sm" style="background:${pc(i)}">${i + 1}</div>
-  <span class="pr-name">${h(p.name)}</span>
-  <input class="num-input num-input-sm" type="number" inputmode="numeric" min="0"
-    data-type="count" data-player="${i}" data-cat="${cat.id}"
-    value="${h(count)}" placeholder="0">
-  <span class="pr-vp" id="vp-${cat.id}-${i}">${vp} VP</span>
+<div class="simple-player-card">
+  <div class="vplayer-header">
+    <div class="player-dot" style="background:${pc(i)}">${i + 1}</div>
+    <span class="vplayer-name">${h(p.name)}</span>
+    <span class="vplayer-vp" id="vp-${cat.id}-${i}">${vp} VP</span>
+  </div>
+  <div class="simple-inputs">
+    <div class="simple-input-row">
+      <label class="ig-label">${h(cat.inputLabel)}</label>
+      <div class="simple-input-field">
+        <input class="num-input num-input-sm" type="number" inputmode="numeric" min="0"
+          data-type="count" data-player="${i}" data-cat="${cat.id}"
+          value="${h(count)}" placeholder="0">
+        <span class="input-unit">${h(cat.inputUnit)}</span>
+      </div>
+    </div>
+    <div class="simple-input-row">
+      <label class="ig-label">${h(cat.cardsUnit)}</label>
+      <div class="simple-input-field">
+        <input class="num-input num-input-sm" type="number" inputmode="numeric" min="0"
+          data-type="cards" data-player="${i}" data-cat="${cat.id}"
+          value="${h(cardsVal)}" placeholder="0">
+        <span class="input-unit">cards</span>
+      </div>
+    </div>
+  </div>
 </div>`;
   }).join('');
-
-  const hint = cat.vpPer > 1
-    ? `<span class="god-formula">${cat.vpPer} VP each</span>`
-    : `<span class="god-formula">1 VP each</span>`;
 
   return `
 <div class="god-section" id="section-${cat.id}">
   ${renderGodHeader(cat)}
-  ${hint}
-  <div class="god-players player-rows">${rows}</div>
+  <div class="god-players simple-players">${cards}</div>
 </div>`;
 }
 
@@ -557,7 +661,8 @@ function renderConcordiaCardSection(players, game) {
 }
 
 function renderTotalScoresContent(players, gameId) {
-  const ranked = getRanked(players, gameId);
+  const praefectus = state.currentGame?.praefectusPlayer ?? null;
+  const ranked = getRanked(players, gameId, praefectus);
   const rows = ranked.map((p, rank) => `
 <div class="total-row">
   <span class="total-medal">${MEDALS[rank] ?? ''}</span>
@@ -576,7 +681,8 @@ ${rows}`;
 function renderResults() {
   const cg = state.currentGame;
   const game = GAMES[cg.gameId];
-  const ranked = getRanked(cg.players, game.id);
+  const praefectus = cg.praefectusPlayer ?? null;
+  const ranked = getRanked(cg.players, game.id, praefectus);
 
   const podium = ranked.map((p, rank) => `
 <div class="podium-item${rank === 0 ? ' winner' : ''}">
@@ -586,16 +692,25 @@ function renderResults() {
   <div class="pod-total">${p.total}</div>
 </div>`).join('');
 
+  // Detect ties involving praefectus
+  let tieNote = '';
+  if (ranked.length >= 2 && ranked[0].total === ranked[1].total && praefectus !== null) {
+    const winner = ranked[0];
+    tieNote = `<div class="tie-note">🤝 Tie broken by PRÆFECTUS MAGNUS — ${h(winner.name)} wins</div>`;
+  }
+
   const breakdowns = ranked.map(p => {
     const rows = game.categories.map(cat => {
       const score = getCatScore(p.scores, cat, game);
       let detail = '';
       if (cat.type === 'vesta') {
         const s = getVestaSestertii(p.scores);
-        detail = `${s}₴ ÷ 10`;
+        detail = `${s}🪙 ÷ 10`;
       } else if (cat.type === 'simple') {
-        const cnt = (p.scores[cat.id] || {}).count || 0;
-        detail = cat.vpPer > 1 ? `${cnt} × ${cat.vpPer}` : `${cnt}`;
+        const s = p.scores[cat.id] || {};
+        const cnt = s.count || 0;
+        const cds = s.cards || 0;
+        detail = `${cds} cards × ${cnt} × ${cat.vpPer}`;
       } else if (cat.type === 'minerva') {
         const s = p.scores.minerva || {};
         const card = MINERVA_CARDS.find(c => c.id === s.card);
@@ -649,6 +764,7 @@ function renderResults() {
   <div class="res-content">
     <div class="res-badge">${game.emoji} ${h(game.name)}</div>
     <div class="podium">${podium}</div>
+    ${tieNote}
     <div class="form-label" style="padding:0 16px">Score Breakdown</div>
     <div class="bd-list">${breakdowns}</div>
     <div class="res-actions">
@@ -683,7 +799,7 @@ function renderHistory() {
   const items = [...state.history].reverse().map((g, ri) => {
     const idx = state.history.length - 1 - ri;
     const gd = GAMES[g.gameId];
-    const ranked = getRanked(g.players, g.gameId);
+    const ranked = getRanked(g.players, g.gameId, g.praefectusPlayer ?? null);
     return `
 <button class="hist-item" data-action="viewDetail" data-i="${idx}">
   <span class="hist-emoji">${gd.emoji}</span>
@@ -714,7 +830,7 @@ function renderHistory() {
 function renderHistoryDetail() {
   const saved = state.history[state.viewingHistoryIndex];
   const gd = GAMES[saved.gameId];
-  const ranked = getRanked(saved.players, gd.id);
+  const ranked = getRanked(saved.players, gd.id, saved.praefectusPlayer ?? null);
   const date = new Date(saved.completedAt).toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
   });
@@ -724,10 +840,12 @@ function renderHistoryDetail() {
       const score = getCatScore(p.scores, cat, gd);
       let detail = '';
       if (cat.type === 'vesta') {
-        detail = `${getVestaSestertii(p.scores)}₴ ÷ 10`;
+        detail = `${getVestaSestertii(p.scores)}🪙 ÷ 10`;
       } else if (cat.type === 'simple') {
-        const cnt = (p.scores[cat.id] || {}).count || 0;
-        detail = cat.vpPer > 1 ? `${cnt} × ${cat.vpPer}` : `${cnt}`;
+        const s = p.scores[cat.id] || {};
+        const cnt = s.count || 0;
+        const cds = s.cards || 0;
+        detail = `${cds} cards × ${cnt} × ${cat.vpPer}`;
       } else if (cat.type === 'minerva') {
         const s = p.scores.minerva || {};
         const card = MINERVA_CARDS.find(c => c.id === s.card);
@@ -805,7 +923,8 @@ function handleClick(e) {
     goGameSelect: () => go('gameSelect'),
     goHistory:    () => go('history'),
     newGame:      () => go('gameSelect'),
-    resume:       () => go('scoring'),
+    resume:       () => { state.scoringTab = state.scoringTab || 'vesta'; go('scoring'); },
+    setTab:       () => { state.scoringTab = d.tab; render(); window.scrollTo({ top: 0, behavior: 'instant' }); },
     viewHistory:  () => go('history'),
 
     selectGame: () => {
@@ -830,8 +949,10 @@ function handleClick(e) {
           name: (names[i] || '').trim() || `Player ${i + 1}`,
           scores: initScores(game)
         })),
+        praefectusPlayer: null,
         startedAt: new Date().toISOString()
       };
+      state.scoringTab = 'vesta';
       persistCurrent();
       go('scoring');
     },
@@ -884,6 +1005,10 @@ function onNumInput(e) {
     if (!p.scores[cat]) p.scores[cat] = {};
     p.scores[cat].count = val;
     refreshSimplePlayer(i, cat);
+  } else if (type === 'cards') {
+    if (!p.scores[cat]) p.scores[cat] = {};
+    p.scores[cat].cards = val;
+    refreshSimplePlayer(i, cat);
   } else if (type === 'minerva-houses') {
     if (!p.scores.minerva) p.scores.minerva = {};
     p.scores.minerva.houses = val;
@@ -915,19 +1040,24 @@ function onMinervaCardChange(e) {
 }
 
 function onConcordiaCardChange(e) {
-  const i = parseInt(e.target.dataset.player);
-  const p = state.currentGame.players[i];
-  p.scores.concordia_card = { hasCard: e.target.checked };
-
-  // Update VP display on label
+  const selected = parseInt(e.target.dataset.player);
   const game = GAMES[state.currentGame.gameId];
-  const label = e.target.closest('.concordia-check-label');
-  if (label) {
-    label.classList.toggle('checked', e.target.checked);
-    const vpEl = label.querySelector('.cc-vp');
-    if (vpEl) vpEl.textContent = e.target.checked ? `${game.concordiaCardVP} VP` : '0 VP';
-  }
-
+  // Radio behaviour: deselect all, then select this player
+  state.currentGame.players.forEach((p, i) => {
+    p.scores.concordia_card = { hasCard: i === selected };
+  });
+  // Update DOM for all labels
+  document.querySelectorAll('.concordia-cb').forEach(cb => {
+    const idx = parseInt(cb.dataset.player);
+    const has = idx === selected;
+    cb.checked = has;
+    const label = cb.closest('.concordia-check-label');
+    if (label) {
+      label.classList.toggle('checked', has);
+      const vpEl = label.querySelector('.cc-vp');
+      if (vpEl) vpEl.textContent = has ? `${game.concordiaCardVP} VP` : '0 VP';
+    }
+  });
   persistCurrent();
   refreshTotalScores();
 }
@@ -935,6 +1065,18 @@ function onConcordiaCardChange(e) {
 function onNameInput(e) {
   const i = parseInt(e.target.dataset.pi);
   state.setupData.names[i] = e.target.value;
+}
+
+function onPraefectusChange(e) {
+  const val = parseInt(e.target.value);
+  state.currentGame.praefectusPlayer = val === -1 ? null : val;
+  // Update selected styling
+  document.querySelectorAll('.praefectus-label').forEach(lbl => {
+    lbl.classList.remove('selected');
+  });
+  e.target.closest('.praefectus-label')?.classList.add('selected');
+  persistCurrent();
+  refreshTotalScores();
 }
 
 // ── LIVE UPDATE HELPERS ──────────────────────────────────────
@@ -948,7 +1090,7 @@ function refreshVestaPlayer(i) {
   GOODS.forEach(g => {
     const el = document.getElementById(`gv-${g.id}-${i}`);
     const val = (parseInt((p.scores.vesta || {})[g.id]) || 0) * g.rate;
-    if (el) el.textContent = `${val}₴`;
+    if (el) el.textContent = `${val}🪙`;
   });
 
   // Update totals
