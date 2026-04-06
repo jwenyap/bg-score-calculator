@@ -1,0 +1,19 @@
+{
+  "name": "Board Game Score Calculator",
+  "short_name": "Board Scores",
+  "description": "Calculate and track scores for board games including Concordia",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F5F0E8",
+  "theme_color": "#1B3A6B",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
