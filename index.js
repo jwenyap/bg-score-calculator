@@ -130,9 +130,9 @@ const GAMES = {
   }
 };
 
-const PLAYER_COLORS = ['#1B3A6B', '#B83232', '#2D7D46', '#B8882A', '#6B42A3'];
+const PLAYER_COLORS = ['#1D6FE8', '#B83232', '#2D7D46', '#B8882A', '#6B42A3'];
 const MEDALS = ['🥇', '🥈', '🥉'];
-const STORE = { history: 'bgs_history', current: 'bgs_current' };
+const STORE = { history: 'bgs_history', current: 'bgs_current', players: 'bgs_players' };
 
 // ═══════════════════════════════════════════════════════════
 // EXPANSIONS
@@ -166,6 +166,7 @@ let state = {
   setupData: null,
   currentGame: loadStored(STORE.current),
   history: loadStored(STORE.history) || [],
+  savedPlayers: loadStored(STORE.players) || [],
   viewingHistoryIndex: 0,
   scoringTab: null
 };
@@ -207,17 +208,20 @@ function getSimpleVP(scores, cat) {
   return count * (cards + legate) * cat.vpPer;
 }
 
-function getMinervaVP(scores, cat) {
+function getMinervaVP(scores, cat, assignments, playerIndex) {
   const s = scores.minerva || {};
 
   // Backward compat: old single-card format { card: 'vintner', houses: '3' }
   if (s.card !== undefined && !MINERVA_CARDS.some(c => s[c.id] !== undefined)) {
+    if (assignments !== undefined) return 0; // old format incompatible with new assignment model
     const card = MINERVA_CARDS.find(c => c.id === s.card);
     return card ? (parseInt(s.houses) || 0) * card.vpPer : 0;
   }
 
   const salt = (cat && cat.saltWildcard) ? (parseInt(s.saltHouses) || 0) : 0;
   return MINERVA_CARDS.reduce((sum, c) => {
+    // If assignments provided, only count this card if it's assigned to this player
+    if (assignments !== undefined && assignments[c.id] !== playerIndex) return sum;
     const houses = parseInt(s[c.id]) || 0;
     if (houses === 0) return sum;
     return sum + (houses + salt) * c.vpPer;
@@ -228,23 +232,23 @@ function getConcordiaCardVP(scores, game) {
   return (scores.concordia_card && scores.concordia_card.hasCard) ? game.concordiaCardVP : 0;
 }
 
-function getCatScore(scores, cat, game) {
+function getCatScore(scores, cat, game, assignments, playerIndex) {
   if (cat.type === 'vesta')   return getVestaVP(scores);
   if (cat.type === 'simple')  return getSimpleVP(scores, cat);
-  if (cat.type === 'minerva') return getMinervaVP(scores, cat);
+  if (cat.type === 'minerva') return getMinervaVP(scores, cat, assignments, playerIndex);
   return 0;
 }
 
-function getPlayerTotal(player, gameId, expansions) {
+function getPlayerTotal(player, playerIndex, gameId, expansions, assignments) {
   const game = GAMES[gameId];
   const cats = getEffectiveCategories(gameId, expansions);
-  return cats.reduce((sum, cat) => sum + getCatScore(player.scores, cat, game), 0)
+  return cats.reduce((sum, cat) => sum + getCatScore(player.scores, cat, game, assignments, playerIndex), 0)
     + getConcordiaCardVP(player.scores, game);
 }
 
-function getRanked(players, gameId, praefectus, expansions) {
+function getRanked(players, gameId, praefectus, expansions, assignments) {
   return players
-    .map((p, i) => ({ ...p, _index: i, total: getPlayerTotal(p, gameId, expansions) }))
+    .map((p, i) => ({ ...p, _index: i, total: getPlayerTotal(p, i, gameId, expansions, assignments) }))
     .sort((a, b) => {
       if (b.total !== a.total) return b.total - a.total;
       if (praefectus === b._index) return 1;
@@ -331,6 +335,9 @@ function render() {
   });
   document.querySelectorAll('.partner-select').forEach(el => {
     el.addEventListener('change', onPartnerChange);
+  });
+  document.querySelectorAll('.minerva-assign-select').forEach(el => {
+    el.addEventListener('change', onMinervaAssign);
   });
 }
 
@@ -425,12 +432,21 @@ function renderSetup() {
   const vm = sd.venusMode || 'individual';
   const partners = sd.partners || {};
 
-  const countBtns = Array.from({ length: game.maxPlayers - game.minPlayers + 1 }, (_, i) => {
+  // Venus expansion supports up to 6 players
+  const effectiveMax = exps.includes('venus') ? 6 : game.maxPlayers;
+
+  const countBtns = Array.from({ length: effectiveMax - game.minPlayers + 1 }, (_, i) => {
     const n = game.minPlayers + i;
     return `<button class="count-btn${count === n ? ' active' : ''}" data-action="setCount" data-n="${n}">${n}</button>`;
   }).join('');
 
   const players = Array.from({ length: count }, (_, i) => ({ name: sd.names[i] || `Player ${i + 1}` }));
+
+  // Saved player names datalist
+  const datalist = state.savedPlayers.length > 0 ? `
+<datalist id="player-name-list">
+  ${state.savedPlayers.map(n => `<option value="${h(n)}">`).join('')}
+</datalist>` : '';
 
   const nameInputs = players.map((p, i) => `
 <div class="name-row">
@@ -438,8 +454,10 @@ function renderSetup() {
   <input class="text-input player-name-input" type="text"
     data-pi="${i}" maxlength="20"
     placeholder="Player ${i + 1}"
-    value="${h(sd.names[i] || '')}">
-</div>`).join('');
+    value="${h(sd.names[i] || '')}"
+    list="player-name-list"
+    autocomplete="off">
+</div>`).join('') + datalist;
 
   let expansionSection = '';
   if (game.expansions && Object.keys(game.expansions).length > 0) {
@@ -543,7 +561,7 @@ function renderScoring() {
     if (cat) {
       if (cat.type === 'vesta')   tabContent = renderVestaSection(players, cat);
       if (cat.type === 'simple')  tabContent = renderSimpleSection(players, cat, cg);
-      if (cat.type === 'minerva') tabContent = renderMinervaSection(players, cat);
+      if (cat.type === 'minerva') tabContent = renderMinervaSection(players, cat, cg);
     }
   }
 
@@ -727,57 +745,90 @@ function renderSimpleSection(players, cat, cg) {
 </div>`;
 }
 
-function renderMinervaSection(players, cat) {
-  const playerCards = players.map((p, i) => {
-    const s = p.scores.minerva || {};
-    const vp = getMinervaVP(p.scores, cat);
+function renderMinervaSection(players, cat, cg) {
+  const assignments = (cg && cg.minervaAssignments) || {};
 
-    const cardRows = MINERVA_CARDS.map(c => {
+  const cardRows = MINERVA_CARDS.map(c => {
+    const assignedIdx = assignments[c.id];
+    const isAssigned = assignedIdx !== undefined;
+    const assignedPlayer = isAssigned ? players[assignedIdx] : null;
+    const playerOptions = players.map((p, i) =>
+      `<option value="${i}"${assignedIdx === i ? ' selected' : ''}>${h(p.name)}</option>`
+    ).join('');
+
+    const housesInput = isAssigned ? (() => {
+      const s = assignedPlayer.scores.minerva || {};
       const houses = s[c.id] ?? '';
       return `
+<div class="minerva-houses-wrap">
+  <div class="player-dot player-dot-sm" style="background:${pc(assignedIdx)}">${assignedIdx + 1}</div>
+  <div class="simple-input-field">
+    <input class="num-input num-input-sm" type="number" inputmode="numeric" min="0"
+      data-type="minerva-card-houses" data-player="${assignedIdx}" data-card="${c.id}"
+      value="${h(houses)}" placeholder="0">
+    <span class="input-unit">houses</span>
+  </div>
+</div>`;
+    })() : '';
+
+    return `
 <div class="minerva-card-row">
   <div class="minerva-card-info">
     <span class="minerva-card-name">${c.name}</span>
     <span class="minerva-card-city">${c.city} · ${c.vpPer} VP/house</span>
   </div>
-  <div class="simple-input-field">
-    <input class="num-input num-input-sm" type="number" inputmode="numeric" min="0"
-      data-type="minerva-card-houses" data-player="${i}" data-card="${c.id}"
-      value="${h(houses)}" placeholder="0">
-    <span class="input-unit">houses</span>
-  </div>
-</div>`;
-    }).join('');
-
-    const saltRow = cat.saltWildcard ? `
-<div class="minerva-salt-row">
-  <label class="ig-label">🧂 Salt city houses (wildcard — counts for each card you own)</label>
-  <div class="simple-input-field">
-    <input class="num-input num-input-sm" type="number" inputmode="numeric" min="0"
-      data-type="minerva-salt" data-player="${i}"
-      value="${h(s.saltHouses ?? '')}" placeholder="0">
-    <span class="input-unit">houses</span>
-  </div>
-</div>` : '';
-
-    return `
-<div class="minerva-player-card">
-  <div class="vplayer-header">
-    <div class="player-dot" style="background:${pc(i)}">${i + 1}</div>
-    <span class="vplayer-name">${h(p.name)}</span>
-    <span class="vplayer-vp" id="vp-minerva-${i}">${vp} VP</span>
-  </div>
-  <div class="minerva-inputs">
-    ${cardRows}
-    ${saltRow}
+  <div class="minerva-card-controls">
+    <select class="minerva-assign-select" data-card="${c.id}">
+      <option value=""${!isAssigned ? ' selected' : ''}>Unassigned</option>
+      ${playerOptions}
+    </select>
+    ${housesInput}
   </div>
 </div>`;
   }).join('');
 
+  // Per-player VP display
+  const vpRows = players.map((p, i) => {
+    const vp = getMinervaVP(p.scores, cat, assignments, i);
+    return `
+<div class="minerva-vp-row">
+  <div class="player-dot player-dot-sm" style="background:${pc(i)}">${i + 1}</div>
+  <span class="minerva-vp-name">${h(p.name)}</span>
+  <span class="vplayer-vp" id="vp-minerva-${i}">${vp} VP</span>
+</div>`;
+  }).join('');
+
+  // Salt section: per player who has at least one card assigned
+  const saltSection = cat.saltWildcard ? (() => {
+    const saltRows = players.map((p, i) => {
+      const hasCard = MINERVA_CARDS.some(c => assignments[c.id] === i);
+      if (!hasCard) return '';
+      const s = p.scores.minerva || {};
+      return `
+<div class="minerva-salt-row">
+  <div class="player-dot player-dot-sm" style="background:${pc(i)}">${i + 1}</div>
+  <span class="minerva-vp-name">${h(p.name)}</span>
+  <div class="simple-input-field">
+    <input class="num-input num-input-sm" type="number" inputmode="numeric" min="0"
+      data-type="minerva-salt" data-player="${i}"
+      value="${h(s.saltHouses ?? '')}" placeholder="0">
+    <span class="input-unit">salt houses</span>
+  </div>
+</div>`;
+    }).join('');
+    return saltRows ? `
+<div class="minerva-salt-section">
+  <div class="ig-label">🧂 Salt city houses (wildcard — counts for each card you own)</div>
+  ${saltRows}
+</div>` : '';
+  })() : '';
+
   return `
 <div class="god-section" id="section-minerva">
   ${renderGodHeader(cat)}
-  <div class="god-players minerva-players">${playerCards}</div>
+  <div class="minerva-vp-bar">${vpRows}</div>
+  <div class="minerva-card-list">${cardRows}</div>
+  ${saltSection}
 </div>`;
 }
 
@@ -809,7 +860,8 @@ function renderConcordiaCardSection(players, game) {
 
 function renderTotalScoresContent(players, gameId, expansions) {
   const praefectus = state.currentGame?.praefectusPlayer ?? null;
-  const ranked = getRanked(players, gameId, praefectus, expansions);
+  const assignments = state.currentGame?.minervaAssignments;
+  const ranked = getRanked(players, gameId, praefectus, expansions, assignments);
   const rows = ranked.map((p, rank) => `
 <div class="total-row">
   <span class="total-medal">${MEDALS[rank] ?? ''}</span>
@@ -825,7 +877,7 @@ ${rows}`;
 
 // ── RESULTS ──────────────────────────────────────────────────
 
-function buildBreakdownDetail(cat, scores, expansions) {
+function buildBreakdownDetail(cat, scores, expansions, assignments, playerIndex) {
   if (cat.type === 'vesta') {
     return `${getVestaSestertii(scores)}🪙 ÷ 10`;
   } else if (cat.type === 'simple') {
@@ -840,12 +892,16 @@ function buildBreakdownDetail(cat, scores, expansions) {
     const s = scores.minerva || {};
     // Backward compat: old format { card, houses }
     if (s.card !== undefined && !MINERVA_CARDS.some(c => s[c.id] !== undefined)) {
+      if (assignments !== undefined) return '—';
       const card = MINERVA_CARDS.find(c => c.id === s.card);
       return card ? `${s.houses || 0} × ${card.vpPer} (${card.name})` : '—';
     }
     const salt = cat.saltWildcard ? (parseInt(s.saltHouses) || 0) : 0;
     const parts = MINERVA_CARDS
-      .filter(c => (parseInt(s[c.id]) || 0) > 0)
+      .filter(c => {
+        if (assignments !== undefined && assignments[c.id] !== playerIndex) return false;
+        return (parseInt(s[c.id]) || 0) > 0;
+      })
       .map(c => {
         const houses = parseInt(s[c.id]) || 0;
         return salt > 0
@@ -862,7 +918,8 @@ function renderResults() {
   const game = GAMES[cg.gameId];
   const expansions = cg.expansions || [];
   const praefectus = cg.praefectusPlayer ?? null;
-  const ranked = getRanked(cg.players, game.id, praefectus, expansions);
+  const assignments = cg.minervaAssignments;
+  const ranked = getRanked(cg.players, game.id, praefectus, expansions, assignments);
   const cats = getEffectiveCategories(cg.gameId, expansions);
   const venusMode = cg.venusMode || 'individual';
   const partners = cg.partners || {};
@@ -890,8 +947,8 @@ function renderResults() {
 
   const breakdowns = ranked.map(p => {
     const rows = cats.map(cat => {
-      const score = getCatScore(p.scores, cat, game);
-      const detail = buildBreakdownDetail(cat, p.scores, expansions);
+      const score = getCatScore(p.scores, cat, game, assignments, p._index);
+      const detail = buildBreakdownDetail(cat, p.scores, expansions, assignments, p._index);
       return `
 <div class="bd-row${score === 0 ? ' muted' : ''}">
   <span>${cat.emoji} ${cat.name}</span>
@@ -975,7 +1032,7 @@ function renderHistory() {
   const items = [...state.history].reverse().map((g, ri) => {
     const idx = state.history.length - 1 - ri;
     const gd = GAMES[g.gameId];
-    const ranked = getRanked(g.players, g.gameId, g.praefectusPlayer ?? null, g.expansions);
+    const ranked = getRanked(g.players, g.gameId, g.praefectusPlayer ?? null, g.expansions, g.minervaAssignments);
     return `
 <button class="hist-item" data-action="viewDetail" data-i="${idx}">
   <span class="hist-emoji">${gd.emoji}</span>
@@ -1007,7 +1064,8 @@ function renderHistoryDetail() {
   const saved = state.history[state.viewingHistoryIndex];
   const gd = GAMES[saved.gameId];
   const expansions = saved.expansions || [];
-  const ranked = getRanked(saved.players, gd.id, saved.praefectusPlayer ?? null, expansions);
+  const assignments = saved.minervaAssignments;
+  const ranked = getRanked(saved.players, gd.id, saved.praefectusPlayer ?? null, expansions, assignments);
   const cats = getEffectiveCategories(gd.id, expansions);
   const date = new Date(saved.completedAt).toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
@@ -1015,8 +1073,8 @@ function renderHistoryDetail() {
 
   const breakdowns = ranked.map((p, rank) => {
     const rows = cats.map(cat => {
-      const score = getCatScore(p.scores, cat, gd);
-      const detail = buildBreakdownDetail(cat, p.scores, expansions);
+      const score = getCatScore(p.scores, cat, gd, assignments, p._index);
+      const detail = buildBreakdownDetail(cat, p.scores, expansions, assignments, p._index);
       return `
 <div class="bd-row${score === 0 ? ' muted' : ''}">
   <span>${cat.emoji} ${cat.name}</span>
@@ -1114,18 +1172,34 @@ function handleClick(e) {
     startGame: () => {
       if (state.currentGame && !confirm('This will replace your current in-progress game. Continue?')) return;
       const { playerCount, names, expansions, venusMode, partners } = state.setupData;
+      const playerNames = Array.from({ length: playerCount }, (_, i) =>
+        (names[i] || '').trim() || `Player ${i + 1}`
+      );
       state.currentGame = {
         gameId: state.selectedGameId,
         expansions: expansions || [],
         venusMode: venusMode || 'individual',
         partners: partners || {},
-        players: Array.from({ length: playerCount }, (_, i) => ({
-          name: (names[i] || '').trim() || `Player ${i + 1}`,
+        minervaAssignments: {},
+        players: playerNames.map(name => ({
+          name,
           scores: initScores(state.selectedGameId, expansions)
         })),
         praefectusPlayer: null,
         startedAt: new Date().toISOString()
       };
+      // Save names for future autocomplete
+      const newNames = playerNames.filter(n => n && !n.startsWith('Player '));
+      if (newNames.length > 0) {
+        const lower = state.savedPlayers.map(n => n.toLowerCase());
+        newNames.forEach(n => {
+          if (!lower.includes(n.toLowerCase())) {
+            state.savedPlayers.push(n);
+            lower.push(n.toLowerCase());
+          }
+        });
+        localStorage.setItem(STORE.players, JSON.stringify(state.savedPlayers));
+      }
       state.scoringTab = 'vesta';
       persistCurrent();
       go('scoring');
@@ -1249,6 +1323,19 @@ function onConcordiaCardChange(e) {
   refreshTotalScores();
 }
 
+function onMinervaAssign(e) {
+  const cardId = e.target.dataset.card;
+  const val = e.target.value;
+  if (!state.currentGame.minervaAssignments) state.currentGame.minervaAssignments = {};
+  if (val === '') {
+    delete state.currentGame.minervaAssignments[cardId];
+  } else {
+    state.currentGame.minervaAssignments[cardId] = parseInt(val);
+  }
+  persistCurrent();
+  render();
+}
+
 function onNameInput(e) {
   const i = parseInt(e.target.dataset.pi);
   state.setupData.names[i] = e.target.value;
@@ -1305,7 +1392,8 @@ function refreshMinervaPlayer(i) {
   const cg = state.currentGame;
   const cats = getEffectiveCategories(cg.gameId, cg.expansions);
   const cat = cats.find(c => c.type === 'minerva');
-  const vp = getMinervaVP(p.scores, cat);
+  const assignments = cg.minervaAssignments;
+  const vp = getMinervaVP(p.scores, cat, assignments, i);
   const el = document.getElementById(`vp-minerva-${i}`);
   if (el) el.textContent = `${vp} VP`;
 }
