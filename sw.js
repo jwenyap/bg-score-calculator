@@ -1,4 +1,4 @@
-const CACHE = 'board-scores-v1';
+const CACHE = 'board-scores-v3';
 const ASSETS = ['.', 'index.html', 'index.css', 'index.js', 'manifest.json', 'icon.svg'];
 
 self.addEventListener('install', e => {
